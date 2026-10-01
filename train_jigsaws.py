@@ -17,11 +17,10 @@ from torchvision.models.video import (
 # JIGSAWS LOCATION
 # --------------------------------------------------
 
+PROJECT_DIR = Path(__file__).resolve().parent
+
 JIGSAWS_ROOT = (
-    Path.home()
-    / "OneDrive"
-    / "Documents"
-    / "Robotic Surgery"
+    PROJECT_DIR.parent
     / "JIGSAWS"
 )
 
