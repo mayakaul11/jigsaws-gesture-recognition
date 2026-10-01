@@ -5,7 +5,6 @@ import numpy as np
 import torch
 
 from torch.utils.data import Dataset, DataLoader
-from torchvision.models.video import R3D_18_Weights
 import torch.nn as nn
 
 from torchvision.models.video import (
@@ -17,12 +16,28 @@ from torchvision.models.video import (
 # JIGSAWS LOCATION
 # --------------------------------------------------
 
+# --------------------------------------------------
+# PROJECT LOCATIONS
+# --------------------------------------------------
+
+# Git repo:
+# C:\Projects\Robotic-Surgery\jigsaws-gesture-recognition
 PROJECT_DIR = Path(__file__).resolve().parent
 
-JIGSAWS_ROOT = (
-    PROJECT_DIR.parent
-    / "JIGSAWS"
-)
+# Parent folder:
+# C:\Projects\Robotic-Surgery
+ROOT_DIR = PROJECT_DIR.parent
+
+# Dataset:
+# C:\Projects\Robotic-Surgery\JIGSAWS
+JIGSAWS_ROOT = ROOT_DIR / "JIGSAWS"
+
+# Trained models:
+# C:\Projects\Robotic-Surgery\models
+MODEL_DIR = ROOT_DIR / "models"
+
+# Create models folder if it doesn't exist
+MODEL_DIR.mkdir(exist_ok=True)
 
 
 # --------------------------------------------------
@@ -422,12 +437,18 @@ if __name__ == "__main__":
     # SAVE MODEL
     # --------------------------------------------------
 
-    torch.save(
-        model.state_dict(),
-        "jigsaws_r3d18_test.pth"
-    )
+    # --------------------------------------------------
+# SAVE MODEL
+# --------------------------------------------------
 
-    print(
-        "\n✅ MODEL SAVED:"
-        " jigsaws_r3d18_test.pth"
-    )
+MODEL_PATH = MODEL_DIR / "jigsaws_r3d18_test.pth"
+
+torch.save(
+    model.state_dict(),
+    MODEL_PATH
+)
+
+print(
+    "\n✅ MODEL SAVED:",
+    MODEL_PATH
+)
