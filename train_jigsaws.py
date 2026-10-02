@@ -1,70 +1,94 @@
 from pathlib import Path
+from collections import Counter
 
 import cv2
 import numpy as np
 import torch
-
-from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
+
+from torch.utils.data import Dataset, DataLoader, Subset
 
 from torchvision.models.video import (
     r3d_18,
     R3D_18_Weights
 )
 
-# --------------------------------------------------
-# JIGSAWS LOCATION
-# --------------------------------------------------
 
-# --------------------------------------------------
-# PROJECT LOCATIONS
-# --------------------------------------------------
+# ==================================================
+# SETTINGS
+# ==================================================
 
-# Git repo:
-# C:\Projects\Robotic-Surgery\jigsaws-gesture-recognition
+BATCH_SIZE = 4
+EPOCHS = 10
+LEARNING_RATE = 0.001
+
+VALIDATION_PARTICIPANT = "B"
+
+NUM_CLASSES = 15
+
+
+# ==================================================
+# PATHS
+# ==================================================
+
 PROJECT_DIR = Path(__file__).resolve().parent
 
-# Parent folder:
-# C:\Projects\Robotic-Surgery
 ROOT_DIR = PROJECT_DIR.parent
 
-# Dataset:
-# C:\Projects\Robotic-Surgery\JIGSAWS
 JIGSAWS_ROOT = ROOT_DIR / "JIGSAWS"
 
-# Trained models:
-# C:\Projects\Robotic-Surgery\models
 MODEL_DIR = ROOT_DIR / "models"
 
-# Create models folder if it doesn't exist
-MODEL_DIR.mkdir(exist_ok=True)
+MODEL_DIR.mkdir(
+    exist_ok=True
+)
 
 
-# --------------------------------------------------
-# R3D-18 PREPROCESSING
-# --------------------------------------------------
+BEST_MODEL_PATH = (
+    MODEL_DIR /
+    "jigsaws_r3d18_best.pth"
+)
+
+
+# ==================================================
+# R3D PREPROCESS
+# ==================================================
 
 weights = R3D_18_Weights.DEFAULT
+
 preprocess = weights.transforms()
 
 
-# --------------------------------------------------
-# GET 16 FRAMES FROM ONE GESTURE
-# --------------------------------------------------
+# ==================================================
+# GET PARTICIPANT
+# ==================================================
+
+def get_participant(trial_name):
+
+    # Suturing_B001
+    #        |
+    #        B
+
+    code = trial_name.split("_")[-1]
+
+    return code[0]
+
+
+# ==================================================
+# VIDEO CLIP LOADER
+# ==================================================
 
 def get_video_clip(
-    video_path,
-    start_frame,
-    end_frame,
-    num_frames=16
+        video_path,
+        start_frame,
+        end_frame,
+        num_frames=16
 ):
 
-    video = cv2.VideoCapture(str(video_path))
+    video = cv2.VideoCapture(
+        str(video_path)
+    )
 
-    if not video.isOpened():
-        raise RuntimeError(
-            f"Could not open video: {video_path}"
-        )
 
     frame_numbers = np.linspace(
         start_frame,
@@ -73,151 +97,219 @@ def get_video_clip(
         dtype=int
     )
 
+
     frames = []
 
+
     for frame_number in frame_numbers:
+
 
         video.set(
             cv2.CAP_PROP_POS_FRAMES,
             frame_number - 1
         )
 
+
         success, frame = video.read()
 
+
         if not success:
+
             video.release()
 
             raise RuntimeError(
-                f"Could not read frame {frame_number} "
-                f"from {video_path}"
+                "Could not read frame"
             )
 
-        # BGR -> RGB
+
         frame = cv2.cvtColor(
             frame,
             cv2.COLOR_BGR2RGB
         )
 
+
         frames.append(frame)
+
+
 
     video.release()
 
-    # [T, H, W, C]
+
     frames = np.stack(frames)
 
-    # NumPy -> PyTorch
-    frames = torch.from_numpy(frames)
 
-    # [T, H, W, C] -> [T, C, H, W]
-    frames = frames.permute(0, 3, 1, 2)
+    frames = torch.from_numpy(
+        frames
+    )
+
+
+    # T,H,W,C
+    # ->
+    # T,C,H,W
+
+    frames = frames.permute(
+        0,
+        3,
+        1,
+        2
+    )
+
 
     return frames
 
 
-# --------------------------------------------------
-# JIGSAWS PYTORCH DATASET
-# --------------------------------------------------
+
+# ==================================================
+# DATASET
+# ==================================================
 
 class JIGSAWSDataset(Dataset):
 
+
     def __init__(self, root):
 
+
         self.root = Path(root)
+
         self.samples = []
 
-        # Only use capture1 for now
-        video_files = list(
-            self.root.rglob("*_capture1.avi")
+
+        videos = list(
+            self.root.rglob(
+                "*_capture1.avi"
+            )
         )
+
 
         print(
             "Videos found:",
-            len(video_files)
+            len(videos)
         )
 
-        for video_path in video_files:
 
-            # Example:
-            # Suturing_B001_capture1.avi
-            #
-            # becomes:
-            # Suturing_B001
 
-            trial_name = video_path.name.replace(
-                "_capture1.avi",
-                ""
+        for video_path in videos:
+
+
+            trial_name = (
+                video_path.name.replace(
+                    "_capture1.avi",
+                    ""
+                )
             )
 
-            # Find matching transcription
-            transcription_files = [
-                path
-                for path
-                in self.root.rglob(
-                    f"{trial_name}.txt"
-                )
-                if path.parent.name.lower()
-                == "transcriptions"
-            ]
 
-            if len(transcription_files) == 0:
-
-                print(
-                    "⚠️ No transcription found for:",
+            participant = (
+                get_participant(
                     trial_name
                 )
+            )
+
+
+
+            transcription_files = [
+
+                path
+
+                for path in self.root.rglob(
+                    f"{trial_name}.txt"
+                )
+
+                if path.parent.name.lower()
+                ==
+                "transcriptions"
+
+            ]
+
+
+
+            if len(
+                transcription_files
+            ) == 0:
 
                 continue
+
+
 
             transcription_path = (
                 transcription_files[0]
             )
 
-            # Read gesture segments
+
+
             with open(
-                transcription_path,
-                "r"
+                transcription_path
             ) as file:
+
+
 
                 for line in file:
 
+
                     parts = (
-                        line.strip().split()
+                        line.strip()
+                        .split()
                     )
 
+
                     if len(parts) < 3:
+
                         continue
+
+
 
                     start_frame = int(
                         parts[0]
                     )
 
+
                     end_frame = int(
                         parts[1]
                     )
 
+
                     gesture = parts[2]
 
-                    if not gesture.startswith("G"):
+
+
+                    if not gesture.startswith(
+                        "G"
+                    ):
+
                         continue
 
-                    # G1 -> 0
-                    # G2 -> 1
-                    # ...
-                    # G15 -> 14
+
 
                     label = (
-                        int(gesture[1:]) - 1
+                        int(
+                            gesture[1:]
+                        )
+                        - 1
                     )
+
+
 
                     self.samples.append(
                         (
+
                             video_path,
+
                             start_frame,
+
                             end_frame,
+
                             label,
-                            gesture
+
+                            gesture,
+
+                            participant,
+
+                            trial_name
+
                         )
                     )
+
+
 
         print(
             "Gesture segments found:",
@@ -225,230 +317,480 @@ class JIGSAWSDataset(Dataset):
         )
 
 
+
     def __len__(self):
 
         return len(self.samples)
 
 
-    def __getitem__(self, index):
+
+    def __getitem__(
+        self,
+        index
+    ):
+
 
         (
+
             video_path,
+
             start_frame,
+
             end_frame,
+
             label,
-            gesture
+
+            gesture,
+
+            participant,
+
+            trial_name
+
         ) = self.samples[index]
+
+
 
         clip = get_video_clip(
             video_path,
             start_frame,
-            end_frame,
-            num_frames=16
+            end_frame
         )
 
-        # Converts:
-        #
-        # [T, C, H, W]
-        #
-        # into R3D format:
-        #
-        # [C, T, 112, 112]
 
-        clip = preprocess(clip)
+        clip = preprocess(
+            clip
+        )
+
 
         return clip, label
-# --------------------------------------------------
-# RUN TRAINING
-# --------------------------------------------------
-
-if __name__ == "__main__":
-
-    # --------------------------------------------------
-    # CREATE DATASET
-    # --------------------------------------------------
-
-    dataset = JIGSAWSDataset(JIGSAWS_ROOT)
-
-    print("\n✅ DATASET CREATED")
-    print("Total gesture examples:", len(dataset))
-
-    clip, label = dataset[0]
-
-    print("\n✅ FIRST SAMPLE")
-    print("Clip shape:", clip.shape)
-    print("Label:", label)
-    print("Gesture:", f"G{label + 1}")
 
 
-    # --------------------------------------------------
-    # CREATE DATALOADER
-    # --------------------------------------------------
 
-    train_loader = DataLoader(
-        dataset,
-        batch_size=2,
-        shuffle=True,
-        num_workers=0
-    )
+# ==================================================
+# TRAINING
+# ==================================================
 
-    clips, labels = next(iter(train_loader))
+def train_epoch(
+        model,
+        loader,
+        optimizer,
+        criterion,
+        device
+):
 
-    print("\n✅ BATCH CREATED")
-    print("Batch shape:", clips.shape)
-    print("Labels:", labels)
-
-
-    # --------------------------------------------------
-    # DEVICE
-    # --------------------------------------------------
-
-    device = torch.device(
-        "cuda" if torch.cuda.is_available()
-        else "cpu"
-    )
-
-    print("\nUsing device:", device)
-
-
-    # --------------------------------------------------
-    # LOAD R3D-18
-    # --------------------------------------------------
-
-    model = r3d_18(
-        weights=R3D_18_Weights.DEFAULT
-    )
-
-    model.fc = nn.Linear(
-        model.fc.in_features,
-        15
-    )
-
-
-    # --------------------------------------------------
-    # FREEZE PRETRAINED LAYERS
-    # --------------------------------------------------
-
-    for parameter in model.parameters():
-        parameter.requires_grad = False
-
-    for parameter in model.fc.parameters():
-        parameter.requires_grad = True
-
-
-    model = model.to(device)
-
-    print("\n✅ MODEL READY")
-    print(model.fc)
-
-
-    # --------------------------------------------------
-    # LOSS + OPTIMIZER
-    # --------------------------------------------------
-
-    criterion = nn.CrossEntropyLoss()
-
-    optimizer = torch.optim.Adam(
-        model.fc.parameters(),
-        lr=0.001
-    )
-
-
-    # --------------------------------------------------
-    # TRAIN FOR ONE EPOCH
-    # --------------------------------------------------
 
     model.train()
 
-    running_loss = 0.0
+
     correct = 0
     total = 0
+    loss_total = 0
 
 
-    for batch_number, (clips, labels) in enumerate(
-        train_loader
-    ):
+
+    for batch_number, (clips, labels) in enumerate(loader):
+
 
         clips = clips.to(device)
+
         labels = labels.to(device)
+
+
 
         optimizer.zero_grad()
 
-        outputs = model(clips)
+
+
+        outputs = model(
+            clips
+        )
+
 
         loss = criterion(
             outputs,
             labels
         )
 
+
+
         loss.backward()
 
+
         optimizer.step()
+        if (batch_number + 1) % 10 == 0:
+            print(f"Training batch {batch_number + 1}/{len(loader)}")
 
-        running_loss += loss.item()
 
-        _, predictions = torch.max(
-            outputs,
-            1
+
+        loss_total += loss.item()
+
+
+
+        predictions = (
+            torch.argmax(
+                outputs,
+                dim=1
+            )
         )
 
-        total += labels.size(0)
 
         correct += (
             predictions == labels
         ).sum().item()
 
-        if (batch_number + 1) % 10 == 0:
 
-            print(
-                f"Batch {batch_number + 1} | "
-                f"Loss: {loss.item():.4f}"
-            )
+        total += labels.size(0)
 
 
-    # --------------------------------------------------
-    # RESULTS
-    # --------------------------------------------------
 
-    average_loss = (
-        running_loss /
-        len(train_loader)
-    )
-
-    training_accuracy = (
+    return (
+        loss_total / len(loader),
         100 * correct / total
     )
 
 
-    print("\n✅ EPOCH COMPLETE")
 
-    print(
-        f"Average loss: "
-        f"{average_loss:.4f}"
+# ==================================================
+# VALIDATION
+# ==================================================
+
+def validate(
+        model,
+        loader,
+        criterion,
+        device
+):
+
+
+    model.eval()
+
+
+    correct = 0
+    total = 0
+    loss_total = 0
+
+
+
+    with torch.no_grad():
+
+
+        for clips, labels in loader:
+
+
+            clips = clips.to(device)
+
+            labels = labels.to(device)
+
+
+
+            outputs = model(
+                clips
+            )
+
+
+            loss = criterion(
+                outputs,
+                labels
+            )
+
+
+            loss_total += loss.item()
+
+
+
+            predictions = torch.argmax(
+                outputs,
+                dim=1
+            )
+
+
+
+            correct += (
+                predictions == labels
+            ).sum().item()
+
+
+
+            total += labels.size(0)
+
+
+
+    return (
+        loss_total / len(loader),
+        100 * correct / total
     )
 
-    print(
-        f"Training accuracy: "
-        f"{training_accuracy:.2f}%"
+
+
+# ==================================================
+# MAIN
+# ==================================================
+
+if __name__ == "__main__":
+
+
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
     )
 
 
-    # --------------------------------------------------
-    # SAVE MODEL
-    # --------------------------------------------------
+    print(
+        "Using device:",
+        device
+    )
 
-    # --------------------------------------------------
-# SAVE MODEL
-# --------------------------------------------------
 
-MODEL_PATH = MODEL_DIR / "jigsaws_r3d18_test.pth"
+    dataset = JIGSAWSDataset(
+        JIGSAWS_ROOT
+    )
 
-torch.save(
-    model.state_dict(),
-    MODEL_PATH
-)
 
-print(
-    "\n✅ MODEL SAVED:",
-    MODEL_PATH
-)
+
+    # -----------------------------
+    # DATASET CHECK
+    # -----------------------------
+
+
+    participants = Counter()
+
+    gestures = Counter()
+
+
+
+    for sample in dataset.samples:
+
+        participants[
+            sample[5]
+        ] += 1
+
+
+        gestures[
+            sample[4]
+        ] += 1
+
+
+
+    print("\nPARTICIPANTS")
+
+    for p,c in participants.items():
+
+        print(
+            p,
+            ":",
+            c
+        )
+
+
+    print("\nGESTURES")
+
+    for g,c in gestures.items():
+
+        print(
+            g,
+            ":",
+            c
+        )
+
+
+
+    # -----------------------------
+    # SPLIT
+    # -----------------------------
+
+
+    train_indices = []
+
+    val_indices = []
+
+
+
+    for i,sample in enumerate(
+        dataset.samples
+    ):
+
+
+        if sample[5] == VALIDATION_PARTICIPANT:
+
+            val_indices.append(i)
+
+        else:
+
+            train_indices.append(i)
+
+
+
+    train_dataset = Subset(
+        dataset,
+        train_indices
+    )
+
+
+    val_dataset = Subset(
+        dataset,
+        val_indices
+    )
+
+
+
+    print(
+        "\nTraining samples:",
+        len(train_dataset)
+    )
+
+
+    print(
+        "Validation samples:",
+        len(val_dataset)
+    )
+
+
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True
+    )
+
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE
+    )
+
+
+
+    # -----------------------------
+    # MODEL
+    # -----------------------------
+
+
+    model = r3d_18(
+        weights=weights
+    )
+
+
+    model.fc = nn.Linear(
+        model.fc.in_features,
+        NUM_CLASSES
+    )
+
+
+
+    for p in model.parameters():
+
+        p.requires_grad = False
+
+
+
+    for p in model.fc.parameters():
+
+        p.requires_grad = True
+
+
+
+    model.to(device)
+
+
+
+    criterion = nn.CrossEntropyLoss()
+
+
+
+    optimizer = torch.optim.Adam(
+        model.fc.parameters(),
+        lr=LEARNING_RATE
+    )
+
+
+
+    best_accuracy = 0
+
+
+
+    # -----------------------------
+    # TRAIN
+    # -----------------------------
+
+
+    for epoch in range(
+        EPOCHS
+    ):
+
+
+        print(
+            f"\nEpoch {epoch+1}/{EPOCHS}"
+        )
+
+
+        train_loss, train_acc = train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            criterion,
+            device
+        )
+
+
+        val_loss, val_acc = validate(
+            model,
+            val_loader,
+            criterion,
+            device
+        )
+
+
+
+        print(
+            "Train loss:",
+            train_loss
+        )
+
+
+        print(
+            "Train accuracy:",
+            train_acc
+        )
+
+
+        print(
+            "Validation loss:",
+            val_loss
+        )
+
+
+        print(
+            "Validation accuracy:",
+            val_acc
+        )
+
+
+
+        if val_acc > best_accuracy:
+
+
+            best_accuracy = val_acc
+
+
+            torch.save(
+                model.state_dict(),
+                BEST_MODEL_PATH
+            )
+
+
+            print(
+                "BEST MODEL SAVED"
+            )
+
+
+
+    print(
+        "\nTraining complete"
+    )
+
+
+    print(
+        "Best validation accuracy:",
+        best_accuracy
+    )
